@@ -172,6 +172,7 @@ static char *edit_line(const char *prompt, int pcols, int *interrupted, int use_
         if (c == '\r' || c == '\n') {
             e.pos = e.b.n;
             refresh(&e);
+            bar_hide();                        /* the newline may scroll */
             out("\r\n", 2);
             result = sb_take(&e.b);
             if (use_hist) hist_add(result);
@@ -345,7 +346,6 @@ static char *edit_line(const char *prompt, int pcols, int *interrupted, int use_
 char *prompt_line(const char *prompt, int pcols, int use_hist, int *interrupted)
 {
     if (interrupted) *interrupted = 0;
-    prompt_guard();                            /* cursor above the status bar */
     struct termios orig;
     if (!g_cfg.line_editor || !isatty(0) || tcgetattr(0, &orig) != 0) {
         fputs(prompt, stdout);

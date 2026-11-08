@@ -245,6 +245,7 @@ static ask_result ask_approval(int *always_flag, const char *what, char **reason
     for (;;) {
         printf("%s? Allow %s?%s [Y]es (Enter) / [n]o / [a]lways this session / or type what to do instead\n",
                C_YELLOW, what, C_RESET);
+        prompt_guard();                        /* above the bar row; bar stays off */
         int intr = 0;
         char *ans = prompt_line(g_cfg.color ? "\033[33m> \033[0m" : "> ", 2, 0, &intr);
         if (!ans) {

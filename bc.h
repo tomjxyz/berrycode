@@ -6,7 +6,7 @@
 #include "json.h"
 #include "util.h"
 
-#define BC_VERSION "0.1.2"
+#define BC_VERSION "0.1.3"
 
 typedef struct {
     char  *base_url;     /* e.g. https://api.openai.com/v1 */
@@ -61,7 +61,8 @@ void prompt_guard(void);
 /* fullscreen (alternate-screen) status bar; no-ops unless on a tty */
 void fs_enter(void);
 void fs_leave(void);
-void fs_repaint(void);
+void fs_repaint(void);       /* paint the bar (marks it visible) */
+void bar_hide(void);         /* erase the bar (marks it gone) */
 
 /* ---- api.c ---- */
 typedef struct {

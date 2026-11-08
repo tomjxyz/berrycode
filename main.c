@@ -79,7 +79,8 @@ void fs_enter(void)
     if (!fs_on()) return;
     printf("\033[?1049h\033[H");
     fflush(stdout);
-    fs_repaint();
+    /* no bar yet: it is painted before the first prompt, and erased
+     * before every scroll, so scrolling can never copy it */
 }
 
 void fs_leave(void)
@@ -90,27 +91,29 @@ void fs_leave(void)
 }
 
 /* The status bar lives on the bottom row, so a prompt started on that row
- * would paint over it. Ask the terminal where the cursor is (CPR); if it
- * is on (or below) the bar row, scroll once and step back up. Skipped when
- * the user already typed ahead, and silently ignored when the terminal
- * does not answer within ~100 ms. */
+ * would paint over it. Hide the bar (it must never be on screen while
+ * anything scrolls, or the scroll would copy it), ask the terminal where
+ * the cursor is (CPR); if it is on (or below) the bar row, scroll once
+ * and step back up. Skipped when the user already typed ahead, and
+ * silently ignored when the terminal does not answer within ~100 ms. */
 void prompt_guard(void)
 {
     if (!fs_on() || !isatty(0)) return;
+    bar_hide();
     int rows = term_rows();
-    if (rows < 3) { fs_repaint(); return; }
+    if (rows < 2) return;
     fd_set rf;
     FD_ZERO(&rf);
     FD_SET(0, &rf);
     struct timeval tv = { 0, 0 };
-    if (select(1, &rf, NULL, NULL, &tv) > 0) { fs_repaint(); return; }  /* typeahead: leave it */
+    if (select(1, &rf, NULL, NULL, &tv) > 0) return;  /* typeahead: leave it */
     struct termios orig;
-    if (tcgetattr(0, &orig) != 0) { fs_repaint(); return; }
+    if (tcgetattr(0, &orig) != 0) return;
     struct termios q = orig;
     q.c_lflag &= ~(tcflag_t)(ICANON | ECHO | IEXTEN);
     q.c_cc[VMIN] = 0;
     q.c_cc[VTIME] = 1;
-    if (tcsetattr(0, TCSADRAIN, &q) != 0) { fs_repaint(); return; }
+    if (tcsetattr(0, TCSADRAIN, &q) != 0) return;
     printf("\033[6n");
     fflush(stdout);
     char b[32];
@@ -128,8 +131,23 @@ void prompt_guard(void)
     }
     tcsetattr(0, TCSADRAIN, &orig);
     if (n > 0) sscanf(b, "\033[%d;%dR", &r, &c);
-    if (r >= rows) printf("\n\033[A");   /* scroll, step back above the bar */
-    fs_repaint();
+    if (r >= rows) { printf("\n\033[A"); fflush(stdout); }   /* scroll, step back above the bar */
+}
+
+static int bar_visible = 0;   /* a bar is currently painted on the bottom row */
+
+/* Erase the bar. Called before anything that might scroll: a scroll with
+ * the bar on screen would copy it into the buffer (duplicates), and a
+ * scroll region would erase history instead, so the bar simply stays
+ * off screen while output flows. */
+void bar_hide(void)
+{
+    if (!bar_visible || !fs_on()) { bar_visible = 0; return; }
+    int rows = term_rows();
+    if (rows < 2) rows = 2;
+    printf("\0337\033[%d;1H\033[K\0338", rows);
+    fflush(stdout);
+    bar_visible = 0;
 }
 
 void fs_repaint(void)
@@ -142,9 +160,10 @@ void fs_repaint(void)
     if (rows < 2) rows = 2;
     sbuf s = {0};
     /* Pin the bar to the bottom row: save the cursor, paint, restore.
-     * Output scrolls the whole screen so it all stays in the terminal's
-     * scrollback; the prompt only ever erases its own rows, so the bar
-     * survives input redraws too. */
+     * Callers must bar_hide() before anything that scrolls. Output scrolls
+     * the whole screen so it all stays in the terminal's scrollback; the
+     * prompt only ever erases its own rows, so the bar survives input
+     * redraws too. */
     sb_adds(&s, "\0337");
     sb_printf(&s, "\033[%d;1H", rows);
     sb_adds(&s, g_cfg.color ? "\033[1;7m" : "");
@@ -165,6 +184,7 @@ void fs_repaint(void)
     fwrite(s.p, 1, s.n, stdout);
     fflush(stdout);
     sb_free(&s);
+    bar_visible = 1;
     /* consume a resize that arrived while painting */
     g_winch_soft = 0;
 }
@@ -470,6 +490,7 @@ static void push_tool_result(const char *id, const char *content)
 
 static void run_turn(const char *user_text)
 {
+    bar_hide();                  /* output flows from here: no bar on screen */
     push_msg("user", user_text);
     refresh_system();
     g_interrupted = 0;
@@ -711,6 +732,8 @@ static char *read_input(void)
     sbuf b = {0};
     int block = 0, first = 1;
     for (;;) {
+        prompt_guard();                          /* hide bar, sit above it */
+        fs_repaint();                            /* bar back for the prompt */
         char pr[64];
         snprintf(pr, sizeof pr, "%s%s%s%s ", C_BOLD, g_chat ? C_MAGENTA : C_GREEN,
                  first ? ">" : "…", C_RESET);
@@ -878,10 +901,11 @@ int main(int argc, char **argv)
 
     int ctrlc = 0;
     for (;;) {
-        if (g_winch_soft) { g_winch_soft = 0; fs_repaint(); }   /* VKB open/close resize */
+        if (g_winch_soft) g_winch_soft = 0;   /* rows re-read at next paint */
+        bar_hide();                           /* scrolling must never copy the bar */
         printf("\n");
-        char *in = read_input();
-        if (g_winch_soft) { g_winch_soft = 0; fs_repaint(); }
+        char *in = read_input();              /* guard + bar, per prompt line */
+        if (g_winch_soft) g_winch_soft = 0;
         if (!in) { printf("\n"); break; }
         if (!strcmp(in, "\x03")) {
             free(in);
@@ -895,16 +919,15 @@ int main(int argc, char **argv)
         while (*t == ' ' || *t == '\t') t++;
         if (!*t) { free(in); continue; }
         if (*t == '/' && !strchr(t, '\n')) {
+            bar_hide();
             int q = slash_command(t);
             free(in);
             if (q) break;
-            fs_repaint();            /* /cd and /mode change the bar */
-            continue;
+            continue;                /* bar returns at the next prompt */
         }
-        if (*t == '!') { run_user_shell(t + 1); free(in); continue; }
+        if (*t == '!') { bar_hide(); run_user_shell(t + 1); free(in); continue; }
         run_turn(t);
         free(in);
-        fs_repaint();
     }
     session_save();
     fs_leave();
