@@ -64,7 +64,9 @@ static void refresh(ed *e)
         if (i > 0) sb_adds(&o, "\033[A");
     }
     sb_adds(&o, e->prompt);
+    sb_adds(&o, C_BOLD);                       /* typed input stands out */
     sb_add(&o, sb_str(&e->b), e->b.n);
+    sb_adds(&o, C_RESET);
     /* text ending exactly at the right margin leaves the cursor in "pending wrap";
      * move it onto the next row explicitly so the row arithmetic below holds */
     if (total > 0 && total % cols == 0) sb_adds(&o, "\r\n");
@@ -343,6 +345,7 @@ static char *edit_line(const char *prompt, int pcols, int *interrupted, int use_
 char *prompt_line(const char *prompt, int pcols, int use_hist, int *interrupted)
 {
     if (interrupted) *interrupted = 0;
+    prompt_guard();                            /* cursor above the status bar */
     struct termios orig;
     if (!g_cfg.line_editor || !isatty(0) || tcgetattr(0, &orig) != 0) {
         fputs(prompt, stdout);

@@ -353,3 +353,253 @@ void mf_add(mfilter *f, const char *s, size_t n, sbuf *plain, sbuf *disp)
 }
 
 void mf_flush(mfilter *f) { f->st = 0; f->n = 0; }  /* drop any partial sequence */
+
+/* ---------- streaming markdown (display only) ---------- */
+
+#define MD_BOLD_OPEN   "\033[1m"
+#define MD_ITALIC_OPEN "\033[2m"   /* dim: guaranteed visible on Term49CX */
+#define MD_CODE_OPEN   "\033[36m"
+#define MD_RESET       "\033[0m"
+#define MD_MAX_DEPTH   8
+
+static const char *md_open_of(int kind)
+{
+    return kind == 'b' ? MD_BOLD_OPEN : kind == 'i' ? MD_ITALIC_OPEN : MD_CODE_OPEN;
+}
+
+static const char *md_mark_of(int kind)
+{
+    return kind == 'b' ? "**" : kind == 'i' ? "*" : "`";
+}
+
+/* append to the innermost hold, or straight out */
+static void md_emit(mdf *f, const char *p, size_t n, sbuf *out)
+{
+    if (f->hold) sb_add(&f->hold->buf, p, n);
+    else sb_add(out, p, n);
+}
+
+static void md_open(mdf *f, int kind, sbuf *out)
+{
+    if (f->depth >= MD_MAX_DEPTH) {           /* too deep: literal */
+        md_emit(f, md_mark_of(kind), kind == 'b' ? 2 : 1, out);
+        return;
+    }
+    mdframe *fr = xmalloc(sizeof *fr);
+    fr->kind = kind;
+    memset(&fr->buf, 0, sizeof fr->buf);
+    fr->prev = f->hold;
+    f->hold = fr;
+    f->depth++;
+}
+
+/* close the top hold, rendering it styled, re-applying outer spans */
+static void md_shut(mdf *f, sbuf *out)
+{
+    mdframe *fr = f->hold;
+    f->hold = fr->prev;
+    f->depth--;
+    sbuf t = {0};
+    sb_adds(&t, md_open_of(fr->kind));
+    sb_add(&t, fr->buf.p, fr->buf.n);
+    sb_adds(&t, MD_RESET);
+    /* re-apply outers outermost-first */
+    int kinds[MD_MAX_DEPTH], nk = 0;
+    for (mdframe *g = f->hold; g && nk < MD_MAX_DEPTH; g = g->prev) kinds[nk++] = g->kind;
+    for (int i = nk - 1; i >= 0; i--) sb_adds(&t, md_open_of(kinds[i]));
+    if (f->hold) sb_add(&f->hold->buf, t.p, t.n);
+    else sb_add(out, t.p, t.n);
+    sb_free(&t);
+    sb_free(&fr->buf);
+    free(fr);
+}
+
+/* unwind all holds, rendering them literally (markers + text) */
+static void md_unwind(mdf *f, sbuf *out)
+{
+    while (f->hold) {
+        mdframe *fr = f->hold;
+        f->hold = fr->prev;
+        f->depth--;
+        sbuf t = {0};
+        const char *m = md_mark_of(fr->kind);
+        sb_adds(&t, m);
+        sb_add(&t, fr->buf.p, fr->buf.n);
+        if (f->hold) sb_add(&f->hold->buf, t.p, t.n);
+        else sb_add(out, t.p, t.n);
+        sb_free(&t);
+        sb_free(&fr->buf);
+        free(fr);
+    }
+}
+
+/* one inline byte (line starts are handled in md_add) */
+static void md_char(mdf *f, unsigned char c, sbuf *out)
+{
+    if (f->pend_star) {
+        f->pend_star = 0;
+        if (c == '*') {
+            if (f->hold && f->hold->kind == 'b') md_shut(f, out);
+            else md_open(f, 'b', out);
+            return;
+        }
+        if (f->hold && f->hold->kind == 'i') md_shut(f, out);
+        else md_open(f, 'i', out);
+        /* fall through to process c */
+    }
+    if (c == '*') { f->pend_star = 1; return; }
+    if (f->pend_tick) {
+        f->pend_tick = 0;
+        if (c == '`') { sb_adds(out, "``"); return; }   /* `` pair: literal */
+        if (f->hold && f->hold->kind == 'c') md_shut(f, out);
+        else md_open(f, 'c', out);
+        /* fall through to process c */
+    }
+    if (c == '`') { f->pend_tick = 1; return; }
+    if (c == '\n') {
+        if (f->hold || f->line) md_unwind(f, out);
+        if (f->line) { sb_adds(out, MD_RESET); f->line = 0; }
+        sb_addc(out, '\n');
+        return;                              /* caller sets bol */
+    }
+    {
+        char b[1] = { (char)c };
+        md_emit(f, b, 1, out);
+    }
+}
+
+static int md_ismark(unsigned char c)
+{
+    return c == '#' || c == '>' || c == '-' || c == '*' || c == '+' ||
+           c == '`' || c == ' ' || c == '\t' || c == '.' ||
+           (c >= '0' && c <= '9');
+}
+
+/* lb holds only blanks/backticks: fence iff 3+ backticks total */
+static int md_is_fence(const mdf *f)
+{
+    int ticks = 0;
+    for (int i = 0; i < f->ln; i++) {
+        if (f->lb[i] == '`') ticks++;
+        else if (f->lb[i] != ' ' && f->lb[i] != '\t') return 0;
+    }
+    return ticks >= 3;
+}
+
+/* blanks from j to end of lb, at least one */
+static int md_blanks(const mdf *f, int from)
+{
+    if (from >= f->ln) return 0;
+    for (int j = from; j < f->ln; j++)
+        if (f->lb[j] != ' ' && f->lb[j] != '\t') return 0;
+    return 1;
+}
+
+/* try to match lb as a line marker. 1 = matched. */
+static int md_trymatch(mdf *f, sbuf *out)
+{
+    int i = 0;
+    while (i < f->ln && (f->lb[i] == ' ' || f->lb[i] == '\t')) i++;
+    if (i < f->ln && f->lb[i] == '#') {
+        int k = 0;
+        while (i + k < f->ln && f->lb[i + k] == '#') k++;
+        if (k >= 1 && k <= 6 && md_blanks(f, i + k)) {
+            sb_adds(out, MD_BOLD_OPEN);      /* strip the #'s */
+            f->line = 'h';
+            f->ln = 0;
+            return 1;
+        }
+        return 0;
+    }
+    if (i < f->ln && f->lb[i] == '>' && md_blanks(f, i + 1)) {
+        sb_adds(out, MD_ITALIC_OPEN);
+        f->line = 'q';
+        f->ln = 0;
+        return 1;
+    }
+    if (i < f->ln && (f->lb[i] == '-' || f->lb[i] == '*' || f->lb[i] == '+') &&
+        md_blanks(f, i + 1)) {
+        sb_add(out, f->lb, (size_t)i);       /* keep indent */
+        sb_adds(out, "\342\200\242 ");       /* • + space */
+        f->ln = 0;
+        return 1;
+    }
+    return 0;
+}
+
+static void md_flush_lb(mdf *f, sbuf *out)
+{
+    for (int i = 0; i < f->ln; i++) md_char(f, (unsigned char)f->lb[i], out);
+    f->ln = 0;
+}
+
+void md_add(mdf *f, const char *s, size_t n, sbuf *out)
+{
+    for (size_t k = 0; k < n; k++) {
+        unsigned char c = (unsigned char)s[k];
+        if (f->drop) {                        /* swallowing a ``` line */
+            if (c == '\n') { f->drop = 0; f->bol = 1; }
+            continue;
+        }
+        if (f->esc) {                         /* model SGR: pass through */
+            char b[1] = { (char)c };
+            md_emit(f, b, 1, out);
+            if (c >= '@' && c <= '~') f->esc = 0;
+            continue;
+        }
+        if (c == 0x1b) { char b[1] = { (char)c }; md_emit(f, b, 1, out); f->esc = 1; continue; }
+        if (f->fence) {
+            if (f->bol) {
+                if (f->ln < (int)sizeof f->lb && (c == ' ' || c == '\t' || c == '`')) {
+                    f->lb[f->ln++] = (char)c;
+                    if (c == '`' && md_is_fence(f)) {
+                        f->fence = 0;         /* closing ``` */
+                        sb_adds(out, MD_RESET);
+                        f->ln = 0;
+                        f->drop = 1;
+                    }
+                    continue;
+                }
+                for (int i = 0; i < f->ln; i++) { char b[1] = { f->lb[i] }; md_emit(f, b, 1, out); }
+                f->ln = 0;
+                f->bol = 0;
+            }
+            if (c == '\n') { sb_addc(out, '\n'); f->bol = 1; }
+            else { char b[1] = { (char)c }; md_emit(f, b, 1, out); }
+            continue;
+        }
+        if (f->bol) {
+            if (c == '\n') { md_flush_lb(f, out); md_char(f, c, out); f->bol = 1; continue; }
+            if (f->ln < (int)sizeof f->lb && md_ismark(c)) {
+                f->lb[f->ln++] = (char)c;
+                if (c == '`' && md_is_fence(f)) {   /* opening ``` */
+                    f->fence = 1;
+                    sb_adds(out, MD_CODE_OPEN);
+                    f->ln = 0;
+                    f->drop = 1;
+                } else if (c == ' ' || c == '\t') {
+                    if (md_trymatch(f, out)) f->bol = 0;
+                    else md_flush_lb(f, out);       /* not a marker: raw */
+                }
+                continue;
+            }
+            if (f->ln > 0) md_flush_lb(f, out);
+            f->bol = 0;
+        }
+        md_char(f, c, out);
+        if (c == '\n') f->bol = 1;
+    }
+}
+
+void md_end(mdf *f, sbuf *out)
+{
+    f->bol = 0;
+    if (f->ln > 0) md_flush_lb(f, out);
+    if (f->pend_star) { sb_addc(out, '*'); f->pend_star = 0; }
+    if (f->pend_tick) { sb_addc(out, '`'); f->pend_tick = 0; }
+    md_unwind(f, out);
+    if (f->line) { sb_adds(out, MD_RESET); f->line = 0; }
+    if (f->fence) { sb_adds(out, MD_RESET); f->fence = 0; }
+    f->drop = 0;
+    f->esc = 0;
+}

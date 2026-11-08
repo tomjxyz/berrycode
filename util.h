@@ -56,6 +56,32 @@ void mf_init(mfilter *f);
 void mf_add(mfilter *f, const char *s, size_t n, sbuf *plain, sbuf *disp);
 void mf_flush(mfilter *f);
 
+/* Streaming markdown renderer (display only): **bold**, *italic*, `code`,
+ * ```fences, # headers, > quotes, - bullets. Inline spans are held until
+ * their closer arrives; a newline or the end of the response renders
+ * pending spans literally. History/plain text is untouched. Stateful so
+ * markers split across stream chunks are handled. */
+typedef struct mdframe {
+    int kind;                    /* 'b' bold, 'i' italic, 'c' code */
+    sbuf buf;                    /* held text */
+    struct mdframe *prev;
+} mdframe;
+typedef struct {
+    int fence;                   /* inside a ``` fence */
+    int drop;                    /* swallowing a ``` marker line */
+    int line;                    /* line style: 0 none, 'h' header, 'q' quote */
+    int bol;                     /* at beginning of line */
+    int esc;                     /* inside a model SGR passthrough */
+    int pend_star;               /* saw '*' awaiting lookahead */
+    int pend_tick;               /* saw '`' awaiting lookahead */
+    int depth;                   /* open inline holds */
+    char lb[16];                 /* line-start marker buffer */
+    int ln;
+    mdframe *hold;               /* inline span stack */
+} mdf;
+void md_add(mdf *f, const char *s, size_t n, sbuf *out);
+void md_end(mdf *f, sbuf *out);  /* render leftovers literally, close styles */
+
 /* Terminal-safe text: drops ANSI escape sequences, \r, backspaces and other control
  * characters (keeps \n and \t), so tool output can't move the cursor and scribble
  * over earlier lines. Stateful so sequences split across chunks are handled. */

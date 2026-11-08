@@ -6,7 +6,7 @@
 #include "json.h"
 #include "util.h"
 
-#define BC_VERSION "0.1.1"
+#define BC_VERSION "0.1.2"
 
 typedef struct {
     char  *base_url;     /* e.g. https://api.openai.com/v1 */
@@ -56,6 +56,8 @@ int term_rows(void);       /* terminal rows (TIOCGWINSZ, COLUMNS/LINES fallback)
 /* DEC 2026 synchronized output around a block (no-op unless tty + sync_output) */
 void sync_begin(void);
 void sync_end(void);
+/* before a prompt: make sure the cursor sits above the status bar */
+void prompt_guard(void);
 /* fullscreen (alternate-screen) status bar; no-ops unless on a tty */
 void fs_enter(void);
 void fs_leave(void);

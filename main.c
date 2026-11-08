@@ -12,8 +12,10 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/ioctl.h>
+#include <sys/select.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
+#include <termios.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -85,6 +87,49 @@ void fs_leave(void)
     if (!fs_on()) return;
     printf("\033[?1049l");   /* leave alternate screen (restores screen + scrollback) */
     fflush(stdout);
+}
+
+/* The status bar lives on the bottom row, so a prompt started on that row
+ * would paint over it. Ask the terminal where the cursor is (CPR); if it
+ * is on (or below) the bar row, scroll once and step back up. Skipped when
+ * the user already typed ahead, and silently ignored when the terminal
+ * does not answer within ~100 ms. */
+void prompt_guard(void)
+{
+    if (!fs_on() || !isatty(0)) return;
+    int rows = term_rows();
+    if (rows < 3) { fs_repaint(); return; }
+    fd_set rf;
+    FD_ZERO(&rf);
+    FD_SET(0, &rf);
+    struct timeval tv = { 0, 0 };
+    if (select(1, &rf, NULL, NULL, &tv) > 0) { fs_repaint(); return; }  /* typeahead: leave it */
+    struct termios orig;
+    if (tcgetattr(0, &orig) != 0) { fs_repaint(); return; }
+    struct termios q = orig;
+    q.c_lflag &= ~(tcflag_t)(ICANON | ECHO | IEXTEN);
+    q.c_cc[VMIN] = 0;
+    q.c_cc[VTIME] = 1;
+    if (tcsetattr(0, TCSADRAIN, &q) != 0) { fs_repaint(); return; }
+    printf("\033[6n");
+    fflush(stdout);
+    char b[32];
+    int n = 0, r = -1, c = -1;
+    for (int i = 0; i < 4; i++) {
+        FD_ZERO(&rf);
+        FD_SET(0, &rf);
+        struct timeval tw = { 0, 100 * 1000 };
+        if (select(1, &rf, NULL, NULL, &tw) <= 0) break;
+        ssize_t k = read(0, b + n, sizeof b - 1 - (size_t)n);
+        if (k <= 0) break;
+        n += (int)k;
+        b[n] = 0;
+        if (memchr(b, 'R', (size_t)n) || n >= (int)sizeof b - 1) break;
+    }
+    tcsetattr(0, TCSADRAIN, &orig);
+    if (n > 0) sscanf(b, "\033[%d;%dR", &r, &c);
+    if (r >= rows) printf("\n\033[A");   /* scroll, step back above the bar */
+    fs_repaint();
 }
 
 void fs_repaint(void)
@@ -667,10 +712,10 @@ static char *read_input(void)
     int block = 0, first = 1;
     for (;;) {
         char pr[64];
-        snprintf(pr, sizeof pr, "%s%s%s%s%s ", C_BOLD, g_chat ? C_MAGENTA : C_CYAN, g_chat && first ? "chat" : "",
+        snprintf(pr, sizeof pr, "%s%s%s%s ", C_BOLD, g_chat ? C_MAGENTA : C_GREEN,
                  first ? ">" : "…", C_RESET);
         int intr;
-        char *l = prompt_line(pr, (g_chat && first ? 4 : 0) + 2, 1, &intr);
+        char *l = prompt_line(pr, 2, 1, &intr);
         if (!l) {
             if (intr) {
                 printf("\n");

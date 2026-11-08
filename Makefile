@@ -50,9 +50,9 @@ $(OUT)/obj/%.o: %.c $(HDRS)
 cacert.pem:
 	cp /etc/ssl/certs/ca-certificates.crt $@
 
-dist: arm/$(APP) cacert.pem berrycode.conf.example README.txt
+dist: arm/$(APP) cacert.pem berrycode.conf.example README.md
 	rm -rf dist && mkdir -p dist/berrycode
-	cp arm/$(APP) cacert.pem berrycode.conf.example README.txt dist/berrycode/
+	cp arm/$(APP) cacert.pem berrycode.conf.example README.md dist/berrycode/
 	tar -C dist -czf $(APP)-arm.tar.gz berrycode
 	@echo "-> $(APP)-arm.tar.gz"
 

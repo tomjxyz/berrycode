@@ -27,6 +27,7 @@ typedef struct {
     sbuf   pend;          /* possible partial <think> / </think> tag held back */
     int    printed;       /* printed any assistant text */
     mfilter mf;           /* model-output sanitizer (colours kept, controls dropped) */
+    mdf    mdx;           /* streaming markdown renderer (display only) */
     long   pt, ct;
 } sstate;
 
@@ -85,8 +86,13 @@ static void out_content(sstate *s, const char *t, size_t n)
     sbuf plain = {0}, disp = {0};
     mf_add(&s->mf, t, n, &plain, &disp);
     if (disp.n) {
-        fwrite(disp.p, 1, disp.n, stdout);
-        s->col0 = disp.p[disp.n - 1] == '\n';
+        sbuf rich = {0};
+        md_add(&s->mdx, disp.p, disp.n, &rich);   /* markdown -> ANSI */
+        if (rich.n) {
+            fwrite(rich.p, 1, rich.n, stdout);
+            s->col0 = disp.p[disp.n - 1] == '\n';
+        }
+        sb_free(&rich);
     }
     fflush(stdout);
     sb_add(&s->content, plain.p, plain.n);  /* history keeps the plain text */
@@ -130,6 +136,13 @@ static void flush_pending(sstate *s)
     if (s->pend.n && !s->in_think) out_content(s, s->pend.p, s->pend.n);
     s->pend.n = 0;
     mf_flush(&s->mf);          /* drop any partial escape at end of stream */
+    {   /* close markdown spans / render leftovers literally */
+        sbuf tail = {0};
+        md_end(&s->mdx, &tail);
+        if (tail.n) fwrite(tail.p, 1, tail.n, stdout);
+        sb_free(&tail);
+        fflush(stdout);
+    }
     end_reasoning(s);
 }
 
