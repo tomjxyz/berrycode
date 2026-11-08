@@ -6,7 +6,7 @@
 #include "json.h"
 #include "util.h"
 
-#define BC_VERSION "0.1.0"
+#define BC_VERSION "0.1.1"
 
 typedef struct {
     char  *base_url;     /* e.g. https://api.openai.com/v1 */
@@ -29,7 +29,6 @@ typedef struct {
     int    bash_output_lines;  /* lines of command output echoed live (0 = all) */
     int    line_editor;    /* own prompt editing (raw mode); 0 = terminal's canonical mode */
     int    animation;      /* purple spinner while the model works */
-    int    fullscreen;     /* run inside the alternate screen (Term49CX 1049h/l), Q20 */
     int    sync_output;    /* bracket block output with DEC 2026 so Term49CX paints whole frames */
     char  *data_dir;     /* sessions etc. */
     char  *exe_dir;
@@ -57,7 +56,7 @@ int term_rows(void);       /* terminal rows (TIOCGWINSZ, COLUMNS/LINES fallback)
 /* DEC 2026 synchronized output around a block (no-op unless tty + sync_output) */
 void sync_begin(void);
 void sync_end(void);
-/* fullscreen (alternate-screen) status bar; no-ops unless fullscreen+tty */
+/* fullscreen (alternate-screen) status bar; no-ops unless on a tty */
 void fs_enter(void);
 void fs_leave(void);
 void fs_repaint(void);

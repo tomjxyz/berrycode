@@ -34,10 +34,9 @@ yolo = false
                          # arrows, Up/Down history). false = the terminal's basic line input
 #animation = true        # the purple spinner; false = no animation at all
 
-# Term49CX on the Q20 (BlackBerry Classic).
-#fullscreen = false      # true = run inside the alternate screen with a status bar
-                         # (model + directory) on the bottom row; scrollback is restored on exit.
-                         # Needs a restart (/set fullscreen 1 applies next launch).
+# Display: berrycode always runs fullscreen on a tty (Term49CX alternate
+# screen, 1049h/l) with a status bar (model + directory) on the bottom row.
+# Scrollback stays intact underneath and is restored on exit.
 #sync_output = true      # bracket block output with DEC 2026 so Term49CX paints
                          # each block as one frame instead of flickering.
                          # The spinner and streaming model text stay unbracketed

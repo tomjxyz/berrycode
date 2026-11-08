@@ -64,10 +64,13 @@ void sync_end(void)
     if (g_cfg.sync_output && tty_out()) { printf("\033[?2026l"); fflush(stdout); }
 }
 
-/* Fullscreen: run the session in the alternate screen (Term49CX supports
- * 1049h/l with a save/restore buffer), keeping a one-line status bar on
- * the bottom row. Scrollback stays intact underneath; leaving restores it. */
-static int fs_on(void) { return g_cfg.fullscreen && tty_out(); }
+/* Fullscreen: berrycode always runs inside the alternate screen on a tty
+ * (Term49CX supports 1049h/l with a save/restore buffer), keeping a
+ * one-line status bar on the bottom row. Scrollback stays intact
+ * underneath; leaving restores it. In-session history stays in the
+ * terminal's own scrollback (no scroll region: region scrolling would
+ * erase lines instead of preserving them). */
+static int fs_on(void) { return isatty(1); }
 
 void fs_enter(void)
 {
@@ -80,7 +83,7 @@ void fs_enter(void)
 void fs_leave(void)
 {
     if (!fs_on()) return;
-    printf("\033[r\033[?1049l");   /* full scrolling region, leave alternate screen */
+    printf("\033[?1049l");   /* leave alternate screen (restores screen + scrollback) */
     fflush(stdout);
 }
 
@@ -93,12 +96,11 @@ void fs_repaint(void)
     int rows = term_rows();
     if (rows < 2) rows = 2;
     sbuf s = {0};
-    /* Pin the bar to the bottom row: save the cursor, confine scrolling
-     * to the rows above it (DECSTBM; ignored where unsupported), paint
-     * the bar, restore. The prompt only ever erases its own rows, so the
-     * bar survives input redraws too. */
+    /* Pin the bar to the bottom row: save the cursor, paint, restore.
+     * Output scrolls the whole screen so it all stays in the terminal's
+     * scrollback; the prompt only ever erases its own rows, so the bar
+     * survives input redraws too. */
     sb_adds(&s, "\0337");
-    if (rows >= 3) sb_printf(&s, "\033[1;%dr", rows - 1);
     sb_printf(&s, "\033[%d;1H", rows);
     sb_adds(&s, g_cfg.color ? "\033[1;7m" : "");
     char bar[256];
@@ -199,7 +201,6 @@ static void config_defaults(void)
     g_cfg.bash_output_lines = 40;
     g_cfg.line_editor = 1;
     g_cfg.animation = 1;
-    g_cfg.fullscreen = 0;
     g_cfg.sync_output = 1;
     g_cfg.opencode_session = 1;
 }
@@ -227,7 +228,6 @@ static void config_set(const char *k, const char *v, const char *src, int line)
     else if (!strcmp(k, "bash_command_lines")) g_cfg.bash_command_lines = atoi(v) > 0 ? atoi(v) : 0;
     else if (!strcmp(k, "line_editor")) g_cfg.line_editor = parse_bool(v);
     else if (!strcmp(k, "animation")) g_cfg.animation = parse_bool(v);
-    else if (!strcmp(k, "fullscreen")) g_cfg.fullscreen = parse_bool(v);
     else if (!strcmp(k, "sync_output")) g_cfg.sync_output = parse_bool(v);
     else if (!strcmp(k, "opencode_session")) g_cfg.opencode_session = parse_bool(v);
     else if (!strcmp(k, "bash_output_lines")) g_cfg.bash_output_lines = atoi(v) > 0 ? atoi(v) : 0;
@@ -494,8 +494,7 @@ static void print_status(void)
     if (g_cfg.bash_command_lines) snprintf(cl, sizeof cl, "%d", g_cfg.bash_command_lines);
     if (g_cfg.bash_output_lines) snprintf(ol, sizeof ol, "%d", g_cfg.bash_output_lines);
     printf("  bash view: command %s lines, output %s lines\n", cl, ol);
-    printf("  screen:   %s, sync %s (%dx%d)\n",
-           g_cfg.fullscreen ? "fullscreen (alt screen + status bar)" : "scrolling",
+    printf("  screen:   fullscreen (alt screen + status bar), sync %s (%dx%d)\n",
            g_cfg.sync_output ? "on (DEC 2026)" : "off", term_cols(), term_rows());
     printf("  cwd:      %s\n", getcwd(cwd, sizeof cwd) ? cwd : "?");
     printf("  messages: %d, tokens %ld in / %ld out\n", json_len(g_msgs) - (g_chat ? 0 : 1), g_tok_in, g_tok_out);
@@ -521,7 +520,6 @@ static void print_help(void)
            "  /thinking        show/hide model reasoning (hidden by default)\n"
            "  /timeout [SECS]  show or set the default bash timeout\n"
            "  /set KEY VALUE   change a config setting for this session\n"
-           "                   (fullscreen needs a restart; most others apply at once)\n"
            "  /clear           start a new conversation\n"
            "  /resume          reload the last saved session\n"
            "  /cd DIR          change working directory\n"
@@ -819,7 +817,7 @@ int main(int argc, char **argv)
         return 0;
     }
 
-    fs_enter();                 /* alt screen + status bar (no-op unless fullscreen=1) */
+    fs_enter();                 /* alt screen + status bar (no-op unless tty) */
     sync_begin();               /* mascot + banner land as one Term49CX frame */
     print_mascot();
     printf("%s%s%s\n", C_DIM, g_cfg.base_url, C_RESET);
