@@ -1,0 +1,7 @@
+# build outputs (both archs) and bundles
+/arm/
+/x86/
+/dist/
+berrycode-arm.tar.gz
+# generated Mozilla CA bundle (Makefile rebuilds it for dist)
+cacert.pem

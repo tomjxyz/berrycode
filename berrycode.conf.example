@@ -1,0 +1,60 @@
+# berrycode config. Copy to ~/.berrycode/config (or berrycode.conf next to the binary).
+# Env vars OPENAI_API_KEY / OPENAI_BASE_URL / BERRYCODE_MODEL and command-line flags override this.
+
+# Any OpenAI-compatible endpoint (path up to, not including, /chat/completions)
+base_url = https://api.openai.com/v1
+#base_url = https://openrouter.ai/api/v1
+#base_url = http://192.168.1.50:11434/v1      # Ollama on your LAN (plain http, no TLS issues)
+#base_url = http://192.168.1.50:8080/v1       # llama.cpp server
+
+api_key = sk-REPLACE_ME
+model = gpt-4o-mini
+
+# true = never ask before writes and commands (same as --yolo or /yolo)
+yolo = false
+
+# HTTPS: the phone's root certificates are from ~2015, so berrycode uses cacert.pem
+# from next to the binary automatically. Point elsewhere here, or as a last resort disable checks.
+#ca_bundle = /accounts/1000/shared/misc/cacert.pem
+#insecure = false
+
+#stream = true          # set false if your server has trouble with streaming
+#color = true
+#max_tokens = 4096      # unset = server default
+#temperature = 0.2      # unset = server default
+#max_steps = 40         # tool-call rounds per message before pausing
+#timeout = 300          # seconds of silence before a request is abandoned
+
+# Reasoning models (GLM, DeepSeek, Qwen, o-series...): their thinking is hidden behind the
+# purple berry animation ("Munching..."). true prints it dimmed instead (or /thinking inside).
+#show_thinking = false
+
+# Terminal behaviour. If Term49 shows garbage, try turning these off one at a time.
+#line_editor = true      # berrycode's own prompt editing (backspace across wrapped lines,
+                         # arrows, Up/Down history). false = the terminal's basic line input
+#animation = true        # the purple spinner; false = no animation at all
+
+# Term49CX on the Q20 (BlackBerry Classic).
+#fullscreen = false      # true = run inside the alternate screen with a status bar
+                         # (model + directory) on the bottom row; scrollback is restored on exit.
+                         # Needs a restart (/set fullscreen 1 applies next launch).
+#sync_output = true      # bracket block output with DEC 2026 so Term49CX paints
+                         # each block as one frame instead of flickering.
+                         # The spinner and streaming model text stay unbracketed
+                         # so they update live. Safe to leave on.
+
+# Slow-phone limits for tools
+#bash_timeout = 60       # default seconds before a command is killed (or /timeout N inside)
+#bash_timeout_max = 600  # the model may ask for a longer timeout, up to this
+#search_timeout = 15     # glob/grep stop after this many seconds and return what they found
+
+# How much of a shell command you see (0 = everything). Long commands are wrapped, not cut off.
+#bash_command_lines = 40 # screen lines of the command shown when asking for approval
+#bash_output_lines = 40  # lines of its output echoed while it runs (the model always gets it all, up to 32 KB)
+#headers = HTTP-Referer: https://example.com|X-Title: berrycode   # extra headers, '|' separated
+
+# OpenCode Go routing / prompt-cache affinity: berrycode sends its stable
+# per-conversation ID as x-opencode-session (new ID on /clear, restored on
+# /resume; code and chat modes each keep their own). Turn off if your
+# endpoint rejects unknown headers.
+#opencode_session = true
