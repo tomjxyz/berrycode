@@ -29,18 +29,18 @@ yolo = false
 # purple berry animation ("Munching..."). true prints it dimmed instead (or /thinking inside).
 #show_thinking = false
 
-# Terminal behaviour. If Term49 shows garbage, try turning these off one at a time.
-#line_editor = true      # berrycode's own prompt editing (backspace across wrapped lines,
-                         # arrows, Up/Down history). false = the terminal's basic line input
+# Terminal behaviour.
+#line_editor = true      # legacy setting; TTY input now always uses the built-in
+                         # editor so kernel echo cannot overwrite the fixed footer
 #animation = true        # the purple spinner; false = no animation at all
 
 # Display: berrycode always runs fullscreen on a tty (Term49CX alternate
-# screen, 1049h/l) with a status bar (model + directory) on the bottom row.
+# screen, 1049h/l) with a status bar (model | input / output tokens) on the bottom row.
 # Scrollback stays intact underneath and is restored on exit.
 #sync_output = true      # bracket block output with DEC 2026 so Term49CX paints
                          # each block as one frame instead of flickering.
-                         # The spinner and streaming model text stay unbracketed
-                         # so they update live. Safe to leave on.
+                         # Streaming chunks each close their own bracket immediately;
+                         # replies and the spinner still update live. Safe to leave on.
 
 # Slow-phone limits for tools
 #bash_timeout = 60       # default seconds before a command is killed (or /timeout N inside)

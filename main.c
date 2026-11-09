@@ -7,6 +7,7 @@
 #include "bc.h"
 
 #include <errno.h>
+#include <fcntl.h>
 #include <getopt.h>
 #include <limits.h>
 #include <stdlib.h>
@@ -18,6 +19,7 @@
 #include <termios.h>
 #include <time.h>
 #include <unistd.h>
+#include "terminal_io.h"
 
 config g_cfg;
 char *g_session_id = NULL;
@@ -29,13 +31,14 @@ static json *g_other;        /* the inactive conversation (code <-> chat) */
 static int   g_chat;         /* chat mode: no tools, no system prompt, nothing extra in context */
 static json *g_tools;
 static long  g_tok_in, g_tok_out;
+static long  g_other_tok_in, g_other_tok_out;
 
 /* ---------- small utilities ---------- */
 
 int term_cols(void)
 {
     struct winsize ws;
-    if (ioctl(1, TIOCGWINSZ, &ws) == 0 && ws.ws_col > 10) return ws.ws_col;
+    if (ioctl(1, TIOCGWINSZ, &ws) == 0 && ws.ws_col > 1) return ws.ws_col;
     const char *c = getenv("COLUMNS");
     if (c && atoi(c) > 10) return atoi(c);
     return 48;              /* Q20 narrow-screen fallback */
@@ -44,149 +47,10 @@ int term_cols(void)
 int term_rows(void)
 {
     struct winsize ws;
-    if (ioctl(1, TIOCGWINSZ, &ws) == 0 && ws.ws_row > 5) return ws.ws_row;
+    if (ioctl(1, TIOCGWINSZ, &ws) == 0 && ws.ws_row > 1) return ws.ws_row;
     const char *c = getenv("LINES");
     if (c && atoi(c) > 5) return atoi(c);
     return 24;
-}
-
-static int tty_out(void) { return isatty(1); }
-
-/* DEC 2026: Term49CX defers paints until the closing bracket (with a
- * 1 s safety timeout), so a status+block lands as one frame instead of
- * flickering. Never wrap the spinner or the streaming model text: those
- * need liveness, and Term49CX would coalesce them to ~1 fps. */
-void sync_begin(void)
-{
-    if (g_cfg.sync_output && tty_out()) { printf("\033[?2026h"); fflush(stdout); }
-}
-
-void sync_end(void)
-{
-    if (g_cfg.sync_output && tty_out()) { printf("\033[?2026l"); fflush(stdout); }
-}
-
-/* Fullscreen: berrycode always runs inside the alternate screen on a tty
- * (Term49CX supports 1049h/l with a save/restore buffer), keeping a
- * one-line status bar on the bottom row. Scrollback stays intact
- * underneath; leaving restores it. In-session history stays in the
- * terminal's own scrollback (no scroll region: region scrolling would
- * erase lines instead of preserving them). */
-static int fs_on(void) { return isatty(1); }
-
-void fs_enter(void)
-{
-    if (!fs_on()) return;
-    printf("\033[?1049h\033[H");
-    fflush(stdout);
-    /* no bar yet: it is painted before the first prompt, and erased
-     * before every scroll, so scrolling can never copy it */
-}
-
-void fs_leave(void)
-{
-    if (!fs_on()) return;
-    printf("\033[?1049l");   /* leave alternate screen (restores screen + scrollback) */
-    fflush(stdout);
-}
-
-/* The status bar lives on the bottom row, so a prompt started on that row
- * would paint over it. Hide the bar (it must never be on screen while
- * anything scrolls, or the scroll would copy it), ask the terminal where
- * the cursor is (CPR); if it is on (or below) the bar row, scroll once
- * and step back up. Skipped when the user already typed ahead, and
- * silently ignored when the terminal does not answer within ~100 ms. */
-void prompt_guard(void)
-{
-    if (!fs_on() || !isatty(0)) return;
-    bar_hide();
-    int rows = term_rows();
-    if (rows < 2) return;
-    fd_set rf;
-    FD_ZERO(&rf);
-    FD_SET(0, &rf);
-    struct timeval tv = { 0, 0 };
-    if (select(1, &rf, NULL, NULL, &tv) > 0) return;  /* typeahead: leave it */
-    struct termios orig;
-    if (tcgetattr(0, &orig) != 0) return;
-    struct termios q = orig;
-    q.c_lflag &= ~(tcflag_t)(ICANON | ECHO | IEXTEN);
-    q.c_cc[VMIN] = 0;
-    q.c_cc[VTIME] = 1;
-    if (tcsetattr(0, TCSADRAIN, &q) != 0) return;
-    printf("\033[6n");
-    fflush(stdout);
-    char b[32];
-    int n = 0, r = -1, c = -1;
-    for (int i = 0; i < 4; i++) {
-        FD_ZERO(&rf);
-        FD_SET(0, &rf);
-        struct timeval tw = { 0, 100 * 1000 };
-        if (select(1, &rf, NULL, NULL, &tw) <= 0) break;
-        ssize_t k = read(0, b + n, sizeof b - 1 - (size_t)n);
-        if (k <= 0) break;
-        n += (int)k;
-        b[n] = 0;
-        if (memchr(b, 'R', (size_t)n) || n >= (int)sizeof b - 1) break;
-    }
-    tcsetattr(0, TCSADRAIN, &orig);
-    if (n > 0) sscanf(b, "\033[%d;%dR", &r, &c);
-    if (r >= rows) { printf("\n\033[A"); fflush(stdout); }   /* scroll, step back above the bar */
-}
-
-static int bar_visible = 0;   /* a bar is currently painted on the bottom row */
-
-/* Erase the bar. Called before anything that might scroll: a scroll with
- * the bar on screen would copy it into the buffer (duplicates), and a
- * scroll region would erase history instead, so the bar simply stays
- * off screen while output flows. */
-void bar_hide(void)
-{
-    if (!bar_visible || !fs_on()) { bar_visible = 0; return; }
-    int rows = term_rows();
-    if (rows < 2) rows = 2;
-    printf("\0337\033[%d;1H\033[K\0338", rows);
-    fflush(stdout);
-    bar_visible = 0;
-}
-
-void fs_repaint(void)
-{
-    if (!fs_on()) return;
-    char cwd[PATH_MAX];
-    if (!getcwd(cwd, sizeof cwd)) strcpy(cwd, "?");
-    int cols = term_cols();
-    int rows = term_rows();
-    if (rows < 2) rows = 2;
-    sbuf s = {0};
-    /* Pin the bar to the bottom row: save the cursor, paint, restore.
-     * Callers must bar_hide() before anything that scrolls. Output scrolls
-     * the whole screen so it all stays in the terminal's scrollback; the
-     * prompt only ever erases its own rows, so the bar survives input
-     * redraws too. */
-    sb_adds(&s, "\0337");
-    sb_printf(&s, "\033[%d;1H", rows);
-    sb_adds(&s, g_cfg.color ? "\033[1;7m" : "");
-    char bar[256];
-    snprintf(bar, sizeof bar, " berrycode %s | %s | %s ", BC_VERSION, g_cfg.model, cwd);
-    /* fit on one row, never touching the last column */
-    size_t bl = strlen(bar);
-    int avail = cols - 1;
-    if (avail < 8) avail = 8;
-    size_t cut = bl;
-    int truncated = 0;
-    if (utf8_cols(bar, bl) > avail) { cut = utf8_take_cols(bar, bl, avail - 1, &truncated); }
-    sb_add(&s, bar, cut);
-    if (truncated) sb_adds(&s, "…");
-    sb_adds(&s, "\033[K");
-    sb_adds(&s, g_cfg.color ? "\033[0m" : "");
-    sb_adds(&s, "\0338");
-    fwrite(s.p, 1, s.n, stdout);
-    fflush(stdout);
-    sb_free(&s);
-    bar_visible = 1;
-    /* consume a resize that arrived while painting */
-    g_winch_soft = 0;
 }
 
 static void on_sigint(int sig) { (void)sig; g_interrupted = 1; }
@@ -410,6 +274,7 @@ static void reset_conversation(void)
     g_msgs = json_arr();
     refresh_system();
     g_tok_in = g_tok_out = 0;
+    fs_set_tokens(g_tok_in, g_tok_out);
     free(g_session_id);
     g_session_id = new_sid();
     if (!g_chat) tools_reset_session();
@@ -432,6 +297,8 @@ static void session_save(void)
         char cwd[PATH_MAX];
         json_set(s, "cwd", json_str(getcwd(cwd, sizeof cwd) ? cwd : "."));
         json_set(s, "model", json_str(g_cfg.model));
+        json_set(s, "tokens_in", json_num((double)g_tok_in));
+        json_set(s, "tokens_out", json_num((double)g_tok_out));
         if (g_session_id) json_set(s, "session_id", json_str(g_session_id));
         json *msgs = json_arr();
         for (int i = g_chat ? 0 : 1; i < json_len(g_msgs); i++) json_push(msgs, json_clone(json_at(g_msgs, i)));
@@ -445,7 +312,15 @@ static void session_save(void)
     free(p);
 }
 
-static int session_load(void)
+static long saved_tokens(const json *session, const char *key)
+{
+    double count = json_getn(session, key, 0);
+    if (!(count > 0)) return 0;
+    if (count >= (double)LONG_MAX) return LONG_MAX;
+    return (long)count;
+}
+
+static int session_load(int replay)
 {
     char *p = session_path();
     if (!p) return -1;
@@ -463,7 +338,10 @@ static int session_load(void)
     refresh_system();
     const char *sid = json_gets(s, "session_id");
     if (sid && *sid) { free(g_session_id); g_session_id = xstrdup(sid); }
-    printf("%sresumed %s session: %d message(s)%s\n", C_DIM, g_chat ? "chat" : "code", json_len(msgs), C_RESET);
+    g_tok_in = saved_tokens(s, "tokens_in");
+    g_tok_out = saved_tokens(s, "tokens_out");
+    fs_set_tokens(g_tok_in, g_tok_out);
+    if (replay) history_replay(msgs, g_chat);
     json_free(s);
     free(p);
     return 0;
@@ -490,7 +368,6 @@ static void push_tool_result(const char *id, const char *content)
 
 static void run_turn(const char *user_text)
 {
-    bar_hide();                  /* output flows from here: no bar on screen */
     push_msg("user", user_text);
     refresh_system();
     g_interrupted = 0;
@@ -500,8 +377,11 @@ static void run_turn(const char *user_text)
         fflush(stdout);
         chat_result r;
         api_chat(g_msgs, g_chat ? NULL : g_tools, &r);
-        g_tok_in += r.prompt_tokens;
-        g_tok_out += r.completion_tokens;
+        if (r.prompt_tokens > 0)
+            g_tok_in = g_tok_in > LONG_MAX - r.prompt_tokens ? LONG_MAX : g_tok_in + r.prompt_tokens;
+        if (r.completion_tokens > 0)
+            g_tok_out = g_tok_out > LONG_MAX - r.completion_tokens ? LONG_MAX : g_tok_out + r.completion_tokens;
+        fs_set_tokens(g_tok_in, g_tok_out);
         if (r.error) {
             if (r.cancelled) printf("%s[cancelled]%s\n", C_YELLOW, C_RESET);
             else printf("%serror: %s%s\n", C_RED, r.error, C_RESET);
@@ -536,8 +416,6 @@ static void run_turn(const char *user_text)
     }
     if (step >= g_cfg.max_steps)
         printf("%s[stopped after %d tool rounds; say \"continue\" to keep going]%s\n", C_YELLOW, g_cfg.max_steps, C_RESET);
-    if (g_tok_in || g_tok_out)
-        printf("%s[tokens so far: %ld in / %ld out]%s\n", C_DIM, g_tok_in, g_tok_out, C_RESET);
     g_interrupted = 0;
     session_save();
 }
@@ -616,8 +494,38 @@ static void list_models(void)
 
 static void run_user_shell(const char *cmd)
 {
+    int pfd[2];
+    if (pipe(pfd) != 0) { perror("pipe"); return; }
     fflush(stdout);
-    int rc = system(cmd);
+    pid_t pid = fork();
+    if (pid < 0) { close(pfd[0]); close(pfd[1]); perror("fork"); return; }
+    if (pid == 0) {
+        signal(SIGINT, SIG_DFL);
+        int nul = open("/dev/null", O_RDONLY);
+        if (nul >= 0) { dup2(nul, 0); close(nul); }
+        dup2(pfd[1], 1);
+        dup2(pfd[1], 2);
+        close(pfd[0]);
+        close(pfd[1]);
+        execl("/bin/sh", "sh", "-c", cmd, (char *)NULL);
+        _exit(127);
+    }
+    close(pfd[1]);
+    char buf[4096];
+    tfilter filter = {0};
+    for (;;) {
+        ssize_t n = read(pfd[0], buf, sizeof buf);
+        if (n < 0 && errno == EINTR) continue;
+        if (n <= 0) break;
+        sbuf clean = {0};
+        for (ssize_t i = 0; i < n; i++)
+            if (tf_char(&filter, (unsigned char)buf[i])) sb_addc(&clean, buf[i]);
+        term_write(sb_str(&clean), clean.n);
+        sb_free(&clean);
+    }
+    close(pfd[0]);
+    int rc = 0;
+    while (waitpid(pid, &rc, 0) < 0 && errno == EINTR) {}
     if (rc != 0) printf("%s[exit %d]%s\n", C_DIM, WIFEXITED(rc) ? WEXITSTATUS(rc) : rc, C_RESET);
 }
 
@@ -630,6 +538,13 @@ static void set_mode(int chat, int announce)
         char *s = g_session_id;       /* each mode keeps its own stable ID */
         g_session_id = other_sid;
         other_sid = s;
+        long tokens = g_tok_in;
+        g_tok_in = g_other_tok_in;
+        g_other_tok_in = tokens;
+        tokens = g_tok_out;
+        g_tok_out = g_other_tok_out;
+        g_other_tok_out = tokens;
+        fs_set_tokens(g_tok_in, g_tok_out);
         g_chat = chat;
         if (!g_msgs) { g_msgs = json_arr(); refresh_system(); }
         else refresh_system();
@@ -681,7 +596,7 @@ static int slash_command(char *line)
     else if (!strcmp(line, "/help") || !strcmp(line, "/?")) print_help();
     else if (!strcmp(line, "/status")) print_status();
     else if (!strcmp(line, "/clear") || !strcmp(line, "/new")) { reset_conversation(); printf("%snew conversation%s\n", C_DIM, C_RESET); }
-    else if (!strcmp(line, "/resume")) session_load();
+    else if (!strcmp(line, "/resume")) session_load(1);
     else if (!strcmp(line, "/chat")) set_mode(1, 1);
     else if (!strcmp(line, "/set")) {
         char *val = arg + strcspn(arg, " \t=");
@@ -732,8 +647,7 @@ static char *read_input(void)
     sbuf b = {0};
     int block = 0, first = 1;
     for (;;) {
-        prompt_guard();                          /* hide bar, sit above it */
-        fs_repaint();                            /* bar back for the prompt */
+        fs_repaint();                            /* update model/directory in the footer */
         char pr[64];
         snprintf(pr, sizeof pr, "%s%s%s%s ", C_BOLD, g_chat ? C_MAGENTA : C_GREEN,
                  first ? ">" : "…", C_RESET);
@@ -879,7 +793,7 @@ int main(int argc, char **argv)
     for (int i = optind; i < argc; i++) { if (extra.n) sb_addc(&extra, ' '); sb_adds(&extra, argv[i]); }
 
     if (oneshot || (extra.n && !isatty(0))) {
-        if (resume) session_load();
+        if (resume) session_load(0); /* --print keeps stdout free of replayed history */
         run_turn(oneshot ? oneshot : extra.p);
         sb_free(&extra);
         return 0;
@@ -895,14 +809,13 @@ int main(int argc, char **argv)
     if (!g_cfg.api_key && strncmp(g_cfg.base_url, "http://", 7) != 0)
         printf("%sno API key set: put api_key = ... in %s/config%s\n", C_YELLOW, g_cfg.data_dir, C_RESET);
     sync_end();                /* banner lands as one frame; turns stream live */
-    if (resume) session_load();
+    if (resume) session_load(1);
     if (extra.n) run_turn(extra.p);
     sb_free(&extra);
 
     int ctrlc = 0;
     for (;;) {
         if (g_winch_soft) g_winch_soft = 0;   /* rows re-read at next paint */
-        bar_hide();                           /* scrolling must never copy the bar */
         printf("\n");
         char *in = read_input();              /* guard + bar, per prompt line */
         if (g_winch_soft) g_winch_soft = 0;
@@ -919,13 +832,12 @@ int main(int argc, char **argv)
         while (*t == ' ' || *t == '\t') t++;
         if (!*t) { free(in); continue; }
         if (*t == '/' && !strchr(t, '\n')) {
-            bar_hide();
             int q = slash_command(t);
             free(in);
             if (q) break;
-            continue;                /* bar returns at the next prompt */
+            continue;
         }
-        if (*t == '!') { bar_hide(); run_user_shell(t + 1); free(in); continue; }
+        if (*t == '!') { run_user_shell(t + 1); free(in); continue; }
         run_turn(t);
         free(in);
     }

@@ -12,8 +12,8 @@ $(error QNX_TARGET not set - run: source ~/bbndk/bbndk-env.sh)
 endif
 
 APP  := berrycode
-SRCS := main.c api.c tools.c json.c util.c spinner.c lineedit.c
-HDRS := bc.h json.h util.h
+SRCS := main.c api.c tools.c json.c util.c spinner.c lineedit.c terminal.c history.c
+HDRS := bc.h json.h util.h terminal_io.h
 LIBS := -lcurl -lm
 
 ARCH ?= arm

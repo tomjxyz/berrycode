@@ -7,6 +7,7 @@
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
+#include "terminal_io.h"
 
 static const char *MESSAGES[] = {
     "Munching", "Juicing", "Ripening", "Picking berries", "Squishing",

@@ -15,12 +15,19 @@ reads your code, answers questions, edits files and runs shell commands.
   asking entirely.
 - **Code and chat modes**: `/code` for tools, `/chat` for plain
   conversation. Each mode keeps its own history; `/resume` picks up
-  where you left off.
+  where you left off. `-c` / `--continue` and `/resume` also replay saved
+  user messages, replies and tool activity into the terminal scrollback.
+  Saved tool calls are displayed, never re-executed. Ctrl-C stops the replay
+  without discarding the restored conversation. `-c -p` restores context but
+  does not print the old conversation.
 - **Markdown replies, rendered live**: **bold**, *italic*, `code`,
   fenced blocks, `# headers`, `>` quotes, `- bullet lists`.
 - **Small-screen aware**: output wraps to your columns, long commands and
   results are paged to what fits, CJK counts double-width, pastes land
   as one block, Term49CX colours (including dim text) just work.
+- **Persistent full-width footer**: Output enters Term49CX's native scrollback.
+  It shows `model | input / output` with cumulative provider-reported token
+  counts.
 - **OpenCode Go Compatible (not approved)**: sends its own `berrycode/<version>`
   user agent plus a stable per-conversation `x-opencode-session` header (new ID on
   `/clear`, restored on `/resume`, toggleable via `opencode_session`).
@@ -66,6 +73,17 @@ Prompt editing: Backspace works across wrapped lines, Left/Right move,
 Up/Down recall history, Ctrl-U/Ctrl-K kill to start/end, Ctrl-W deletes
 a word, Ctrl-A/Ctrl-E jump to start/end.
 
+The footer is attached to the live terminal screen, not overlaid on the
+terminal's historical view when you manually scroll back. History retains
+the terminal's configured scrollback limit and the existing alternate-screen
+lifetime: quitting restores the shell screen. Long prompt edits use a bounded
+viewport. Interactive TTY prompts always use the built-in editor (kernel echo
+would bypass footer protection), even with `line_editor = false`.
+
+`!` commands have their stdout/stderr captured and terminal controls removed
+so they cannot move or archive the footer. Their stdin is `/dev/null`; run
+interactive programs such as editors directly from the shell outside berrycode.
+
 ## Configuration (`~/.berrycode/config`)
 
 ```ini
@@ -95,11 +113,16 @@ Cross-compiled with the BB10 NDK toolchain (GCC 5.4.0, `-std=gnu99`):
 
 ```sh
 source ~/bbndk/bbndk-env.sh
-make -C apps/berrycode clean both   # arm/berrycode + x86/berrycode
-make -C apps/berrycode check        # static device checks, must PASS
+make -C apps/plain_berrycode clean both   # arm/berrycode + x86/berrycode
+make -C apps/plain_berrycode check        # static device checks, must PASS
 ```
 
 `make dist` bundles the phone binary + `cacert.pem` + sample config
 into `berrycode-arm.tar.gz`. Zero warnings on both architectures.
 
-berrycode 0.1.2. Licensed under the MIT License — see `LICENSE`.
+Host-side terminal/scrollback regression tests (Python 3 + a host C compiler,
+no extra packages): `python3 apps/plain_berrycode/tests/test_terminal.py`.
+Offline continue/resume integration tests:
+`python3 apps/plain_berrycode/tests/test_resume.py`.
+
+berrycode 0.1.4. Licensed under the MIT License — see `LICENSE`.

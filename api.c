@@ -4,6 +4,7 @@
 #include <curl/curl.h>
 #include <stdlib.h>
 #include <string.h>
+#include "terminal_io.h"
 
 #define MAX_TC   32
 #define RAW_CAP  (4u << 20)
@@ -326,7 +327,12 @@ int api_chat(json *messages, const json *tools, chat_result *out)
     json_set(body, "model", json_str(g_cfg.model));
     json_set(body, "messages", json_clone(messages));
     if (tools && json_len(tools)) json_set(body, "tools", json_clone(tools));
-    if (g_cfg.stream) json_set(body, "stream", json_bool(1));
+    if (g_cfg.stream) {
+        json_set(body, "stream", json_bool(1));
+        json *options = json_obj();
+        json_set(options, "include_usage", json_bool(1));
+        json_set(body, "stream_options", options);
+    }
     if (g_cfg.max_tokens > 0) json_set(body, "max_tokens", json_num(g_cfg.max_tokens));
     if (g_cfg.temperature >= 0) json_set(body, "temperature", json_num(g_cfg.temperature));
     char *payload = json_dump(body);

@@ -15,6 +15,7 @@
 #include <time.h>
 #include <limits.h>
 #include <unistd.h>
+#include "terminal_io.h"
 
 #define READ_DEFAULT_LINES 400
 #define READ_MAX_BYTES     (48 * 1024)
@@ -245,7 +246,7 @@ static ask_result ask_approval(int *always_flag, const char *what, char **reason
     for (;;) {
         printf("%s? Allow %s?%s [Y]es (Enter) / [n]o / [a]lways this session / or type what to do instead\n",
                C_YELLOW, what, C_RESET);
-        prompt_guard();                        /* above the bar row; bar stays off */
+        fs_repaint();                          /* footer stays visible during approval */
         int intr = 0;
         char *ans = prompt_line(g_cfg.color ? "\033[33m> \033[0m" : "> ", 2, 0, &intr);
         if (!ans) {
@@ -685,12 +686,15 @@ static char *t_bash(const json *a)
             dropped += (size_t)k;
         }
         /* live echo (first lines only, to keep the phone screen readable) */
+        sbuf live = {0};
         for (ssize_t i = 0; i < k && shown_lines < max_shown; i++) {
             if (!tf_char(&tf, (unsigned char)buf[i])) continue;   /* no \r / escapes on screen */
-            if (at_bol) { fputs("  │ ", stdout); at_bol = 0; }
-            fputc(buf[i], stdout);
+            if (at_bol) { sb_adds(&live, "  │ "); at_bol = 0; }
+            sb_addc(&live, buf[i]);
             if (buf[i] == '\n') { at_bol = 1; shown_lines++; }
         }
+        term_write(sb_str(&live), live.n);
+        sb_free(&live);
         fflush(stdout);
     }
     close(pfd[0]);

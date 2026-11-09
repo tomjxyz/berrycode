@@ -6,7 +6,7 @@
 #include "json.h"
 #include "util.h"
 
-#define BC_VERSION "0.1.3"
+#define BC_VERSION "0.1.4"
 
 typedef struct {
     char  *base_url;     /* e.g. https://api.openai.com/v1 */
@@ -56,13 +56,13 @@ int term_rows(void);       /* terminal rows (TIOCGWINSZ, COLUMNS/LINES fallback)
 /* DEC 2026 synchronized output around a block (no-op unless tty + sync_output) */
 void sync_begin(void);
 void sync_end(void);
-/* before a prompt: make sure the cursor sits above the status bar */
-void prompt_guard(void);
 /* fullscreen (alternate-screen) status bar; no-ops unless on a tty */
 void fs_enter(void);
 void fs_leave(void);
-void fs_repaint(void);       /* paint the bar (marks it visible) */
-void bar_hide(void);         /* erase the bar (marks it gone) */
+void fs_repaint(void);       /* update the persistent bottom-row footer */
+void fs_set_tokens(long in, long out); /* update footer totals under output lock */
+void term_write(const char *s, size_t n); /* serialized, footer-safe UI output */
+void history_replay(const json *messages, int chat); /* display-only saved conversation */
 
 /* ---- api.c ---- */
 typedef struct {

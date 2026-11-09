@@ -13,6 +13,7 @@
 #include <string.h>
 #include <termios.h>
 #include <unistd.h>
+#include "terminal_io.h"
 
 #define HIST_MAX 100
 
@@ -39,20 +40,27 @@ static int cols_of(const char *s, size_t n)
 
 static void out(const char *s, size_t n)
 {
-    while (n) {
-        ssize_t w = write(1, s, n);
-        if (w < 0) { if (errno == EINTR) continue; return; }
-        s += w;
-        n -= (size_t)w;
-    }
+    term_write(s, n);
 }
 
 /* redraw prompt + text and put the cursor where it belongs */
 static void refresh(ed *e)
 {
     int cols = term_cols();
-    int total = e->pcols + cols_of(sb_str(&e->b), e->b.n);
     int cur = e->pcols + cols_of(sb_str(&e->b), e->pos);
+    /* Keep a screen-sized viewport when a paste/input exceeds the available
+     * height. Otherwise row arithmetic would reach above the screen and
+     * erase transcript lines on the next edit. Arrow keys move the viewport. */
+    int maxrows = term_rows() - 1;
+    if (maxrows < 1) maxrows = 1;
+    int first = cur / cols >= maxrows ? cur / cols - maxrows + 1 : 0;
+    int ignored;
+    size_t from = first ? utf8_take_cols(sb_str(&e->b), e->b.n,
+                                         first * cols - e->pcols, &ignored) : 0;
+    int lead = first ? 0 : e->pcols;
+    size_t take = utf8_take_cols(sb_str(&e->b) + from, e->b.n - from,
+                                 maxrows * cols - lead, &ignored);
+    int shown = lead + cols_of(sb_str(&e->b) + from, take);
     sbuf o = {0};
     /* Back to the field's first row, then erase exactly the rows the
      * field occupied at the last refresh, bottom-up. Never touches rows
@@ -63,14 +71,15 @@ static void refresh(ed *e)
         sb_adds(&o, "\r\033[K");
         if (i > 0) sb_adds(&o, "\033[A");
     }
-    sb_adds(&o, e->prompt);
+    if (!first) sb_adds(&o, e->prompt);
     sb_adds(&o, C_BOLD);                       /* typed input stands out */
-    sb_add(&o, sb_str(&e->b), e->b.n);
+    sb_add(&o, sb_str(&e->b) + from, take);
     sb_adds(&o, C_RESET);
     /* text ending exactly at the right margin leaves the cursor in "pending wrap";
      * move it onto the next row explicitly so the row arithmetic below holds */
-    if (total > 0 && total % cols == 0) sb_adds(&o, "\r\n");
-    int end_row = total / cols, cur_row = cur / cols, cur_col = cur % cols;
+    if (shown > 0 && shown % cols == 0 && shown / cols < maxrows) sb_adds(&o, "\r\n");
+    int end_row = shown / cols, cur_row = cur / cols - first, cur_col = cur % cols;
+    if (end_row >= maxrows) end_row = maxrows - 1;
     if (end_row > cur_row) sb_printf(&o, "\033[%dA", end_row - cur_row);
     sb_adds(&o, "\r");
     if (cur_col) sb_printf(&o, "\033[%dC", cur_col);
@@ -172,7 +181,6 @@ static char *edit_line(const char *prompt, int pcols, int *interrupted, int use_
         if (c == '\r' || c == '\n') {
             e.pos = e.b.n;
             refresh(&e);
-            bar_hide();                        /* the newline may scroll */
             out("\r\n", 2);
             result = sb_take(&e.b);
             if (use_hist) hist_add(result);
@@ -329,7 +337,9 @@ static char *edit_line(const char *prompt, int pcols, int *interrupted, int use_
             if (c >= 0xC0) continue;                             /* UTF-8 lead byte: wait for the rest */
             /* plain ASCII typed at the end, not reaching the margin: just echo (fast on a slow phone) */
             if (c < 0x80 && at_end && (e.pcols + cols_of(e.b.p, e.b.n)) % term_cols() != 0) {
-                out((const char *)&c, 1);
+                /* refresh() resets SGR after drawing. Fast echo must apply
+                 * the same input style, not inherit the terminal's reset. */
+                printf("%s%c%s", C_BOLD, c, C_RESET);
                 continue;
             }
         } else {
@@ -347,7 +357,9 @@ char *prompt_line(const char *prompt, int pcols, int use_hist, int *interrupted)
 {
     if (interrupted) *interrupted = 0;
     struct termios orig;
-    if (!g_cfg.line_editor || !isatty(0) || tcgetattr(0, &orig) != 0) {
+    /* Kernel echo bypasses the output manager and could overwrite the footer.
+     * TTY input therefore always uses the editor; pipes still use read_line. */
+    if (!isatty(0) || tcgetattr(0, &orig) != 0) {
         fputs(prompt, stdout);
         fflush(stdout);
         return read_line(stdin, interrupted);
